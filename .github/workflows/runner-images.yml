@@ -1,0 +1,132 @@
+name: Sync Public README runner-images
+
+on:
+  schedule:
+    - cron: '0 0 */5 * *' # Runs at 00:00, every 5 days
+  push:
+    paths:
+      - '.github/workflows/runner-images.yml'
+  workflow_dispatch: # Cho phép bấm chạy thủ công 
+
+jobs:
+  sync-and-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+
+      - name: Fetch remote README.md
+        run: |
+          curl --create-dirs -sL https://raw.githubusercontent.com/actions/runner-images/refs/heads/main/README.md -o runner-images/README.md
+
+      - name: Check for changes
+        id: git_check
+        run: |
+          if [[ -n $(git status --porcelain runner-images/README.md) ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Changes detected in runner-images/README.md"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No changes detected in runner-images/README.md"
+          fi
+
+      - name: Extract differences and generate AI Commit
+        id: ai_commit
+        if: steps.git_check.outputs.changed == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          cat << 'EOF' > ai_commit.py
+          import os, subprocess, json, urllib.request
+
+          api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+          default_msg = "update runner-images/README.md"
+          upgit='false'
+
+          if not api_key:
+              print("Warning: Không tìm thấy GEMINI_API_KEY, thử lấy commit message từ repo gốc...")
+              try:
+                  gh_api = "https://api.github.com/repos/actions/runner-images/commits?path=README.md&per_page=1"
+                  req = urllib.request.Request(gh_api, headers={"User-Agent": "github-actions-bot"})
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      data = json.loads(resp.read().decode("utf-8"))
+                      origin_msg = data[0]["commit"]["message"].splitlines()[0].strip()
+                      commit_msg = f"{origin_msg}"
+                      print(f"Lấy được commit gốc: {commit_msg}")
+              except Exception as e:
+                  print(f"Không lấy được commit gốc: {e}, dùng message mặc định.")
+                  commit_msg = f"{default_msg} (no API key)"
+
+              upgit = 'true'
+          else:
+              try:
+                  diff_output = subprocess.check_output(
+                      ["git", "diff", "runner-images/README.md"],
+                      stderr=subprocess.DEVNULL
+                  ).decode("utf-8", errors="ignore").strip()
+                  diff_text = diff_output
+              except Exception as e:
+                  print(f"Lỗi đọc git diff: {e}")
+                  diff_text = ""
+
+              if not diff_text:
+                  commit_msg = "Tải runner-images/README.md lần đầu"
+                  upgit = 'true'
+              else:
+                  prompt = (
+                      "Dựa vào đoạn git diff bên dưới, hãy chi tiết bằng tiếng Việt mô tả sự thay đổi. "
+                      "Chỉ trả về nội dung commit message, không giải thích thêm, không dùng dấu ngoặc kép bọc ngoài:\n\n"
+                      f"{diff_text}"
+                  )
+
+                  payload = json.dumps({
+                      "contents": [{"parts": [{"text": prompt}]}]
+                  }).encode("utf-8")
+
+                  models = [ "gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite"]
+                  commit_msg = default_msg
+
+                  for model in models:
+                      url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+                      req = urllib.request.Request(
+                          url,
+                          data=payload,
+                          headers={"Content-Type": "application/json"}
+                      )
+                      print(f"Thử model: {model}")
+                      print(f"payload: {payload}")
+                      try:
+                          with urllib.request.urlopen(req, timeout=20) as resp:
+                              res_data = json.loads(resp.read().decode("utf-8"))
+                              print(f"res API: {res_data}")
+                              raw_msg = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                              # Loại bỏ dấu nháy thừa và dồn về 1 dòng
+                              commit_msg = " ".join(raw_msg.splitlines()).strip("\"'` ")
+                              upgit = 'true'
+                              break  # Thành công, thoát vòng lặp
+                      except Exception as e:
+                          print(f"Lỗi khi gọi model {model}: {e}, thử model tiếp theo...")
+
+          # Ghi vào GITHUB_ENV theo chuẩn delimiter để tránh lỗi multiline
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"COMMIT_MSG<<EOF\n{commit_msg}\nEOF\n")
+              env_file.write(f"UPGIT<<EOF\n{str(upgit).lower()}\nEOF\n")
+          EOF
+
+          python3 ai_commit.py
+
+      - name: Commit and Push
+        if: env.UPGIT == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add runner-images/README.md
+          echo "Commit message: ${COMMIT_MSG}"
+          git commit -m "${COMMIT_MSG}"
+          git push
