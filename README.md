@@ -4,6 +4,16 @@ Tự động đồng bộ file `README.md` từ repo [`actions/runner-images`](h
 
 ---
 
+## 🎯 Tại sao cần theo dõi?
+
+GitHub Actions liên tục cập nhật và đổi tên các runner image — ví dụ `ubuntu-20.04` bị khai tử, `ubuntu-24.04` ra đời, hay `macos-14` thay thế `macos-13`. Những thay đổi này **không có thông báo chủ động**, và nếu bỏ sót, workflow ở các repo khác sẽ âm thầm chạy trên image lỗi thời hoặc thậm chí **bị fail hoàn toàn**.
+
+> 💡 **Mục tiêu cốt lõi:** Phát hiện sớm khi tên image thay đổi → cập nhật kịp thời trong file `.yml` của các repo đang dùng — trước khi chúng bị ảnh hưởng.
+
+Repo này đóng vai trò **trạm quan sát**: mỗi khi `actions/runner-images` cập nhật danh sách image, thay đổi sẽ được kéo về, diff rõ ràng, và AI tóm tắt ngay bằng tiếng Việt để dễ theo dõi.
+
+---
+
 ## ✨ Tính năng
 
 - 📥 **Tự động tải** `README.md` mới nhất từ `actions/runner-images` về thư mục `runner-images/`
